@@ -156,11 +156,12 @@ func (m *Message) Bytes() ([]byte, error) {
 				return nil, err
 			}
 
-			b := make([]byte, base64.StdEncoding.EncodedLen(len(att.Content)))
-			base64.StdEncoding.Encode(b, att.Content)
-			// Split base64 lines is good practice but not strictly required by all transport, however for strict RFC compliance line length limits matter.
-			// keeping it simple for now, raw base64.
-			attPart.Write(b)
+			encoder := base64.NewEncoder(base64.StdEncoding, attPart)
+			_, err := encoder.Write(att.Content)
+			if err != nil {
+				return nil, err
+			}
+			encoder.Close()
 		}
 		writer.Close()
 	} else {
