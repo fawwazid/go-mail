@@ -67,7 +67,7 @@ func CreateAttachmentFromFile(path string, opts ...FileOption) (*Attachment, err
 	return a, nil
 }
 
-// Base64 returns the base64 encoded content of the attachment
+// Base64 returns the base64 encoded content of the attachment.
 func (a *Attachment) Base64() string {
 	return base64.StdEncoding.EncodeToString(a.Content)
 }
