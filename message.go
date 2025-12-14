@@ -157,7 +157,7 @@ func (m *Message) Bytes() ([]byte, error) {
 			}
 
 			encoder := base64.NewEncoder(base64.StdEncoding, attPart)
-			_, err := encoder.Write(att.Content)
+			_, err = encoder.Write(att.Content)
 			if err != nil {
 				return nil, err
 			}
