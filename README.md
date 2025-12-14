@@ -69,7 +69,9 @@ data := []byte("some content")
 msg.AddAttachmentData("data.txt", data, "text/plain")
 
 client := mail.NewClient("smtp.example.com", 465, "user", "pass", mail.EncryptionSSL)
-client.Send(msg)
+if err := client.Send(msg); err != nil {
+    log.Fatal(err)
+}
 ```
 
 ## Testing
