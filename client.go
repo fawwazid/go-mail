@@ -30,8 +30,15 @@ func NewClient(host string, port int, username, password string, encryption Encr
 // It handles potential connection and authentication details.
 func (c *Client) Send(messages ...*Message) error {
 	addr := fmt.Sprintf("%s:%d", c.host, c.port)
-	auth := smtp.PlainAuth("", c.username, c.password, c.host)
 
+	// Prevent sending credentials over unencrypted connections
+	var auth smtp.Auth = nil
+	if c.username != "" || c.password != "" {
+		if c.encryption == EncryptionNone {
+			return fmt.Errorf("refusing to send credentials over an unencrypted connection")
+		}
+		auth = smtp.PlainAuth("", c.username, c.password, c.host)
+	}
 	// Custom dialer to handle SSL/TLS vs StartTLS vs None
 	// For simplicity, we can try to use standard helpers or build our own flow if needed.
 	// Standard smtp.SendMail uses StartTLS if available.
