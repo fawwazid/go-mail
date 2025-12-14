@@ -90,7 +90,7 @@ func (c *Client) sendSSL(addr string, auth smtp.Auth, messages ...*Message) erro
 		return err
 	}
 	defer client.Quit() // defer Quit, but we might want to ensure error checking on quit?
-	// standard defer is usually usually fine for simple clients
+	// standard defer is usually fine for simple clients
 
 	if err = client.Auth(auth); err != nil {
 		return err
