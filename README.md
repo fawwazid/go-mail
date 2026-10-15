@@ -14,8 +14,9 @@ go get github.com/fawwazid/go-mail
 ## Features
 
 - **Fluent Message Builder**: Easily construct emails with a chainable API.
-- **Attachments**: Support for file attachments and inline files, with automatic base64 encoding.
-- **SMTP Support**: Built-in support for SSL, TLS (StartTLS), and plain connections.
+- **Attachments**: Support for file attachments and inline files, with automatic MIME detection and base64 encoding.
+- **Secure SMTP**: Built-in support for implicit TLS and mandatory StartTLS, with TLS 1.2 as the minimum.
+- **Safe Defaults**: Network timeouts, message-size limits, validated addresses, and MIME-safe encoding.
 - **Mocking**: Includes a `MockClient` for easy unit testing in your application.
 
 ## Usage
@@ -64,6 +65,11 @@ if err := msg.AddAttachment("./report.pdf"); err != nil {
     log.Fatal(err)
 }
 
+// Override the detected filename or MIME type when needed.
+if err := msg.AddAttachment("./report", mail.WithFileName("report.pdf"), mail.WithContentType("application/pdf")); err != nil {
+    log.Fatal(err)
+}
+
 // Add file from bytes
 data := []byte("some content")
 msg.AddAttachmentData("data.txt", data, "text/plain")
@@ -73,6 +79,21 @@ if err := client.Send(msg); err != nil {
     log.Fatal(err)
 }
 ```
+
+The default SMTP timeout is 30 seconds. Override it when needed:
+
+```go
+client := mail.NewClient(
+    "smtp.example.com",
+    465,
+    "user",
+    "pass",
+    mail.EncryptionSSL,
+    mail.WithTimeout(10*time.Second),
+)
+```
+
+Unencrypted SMTP (`EncryptionNone`) is retained only for source compatibility and is rejected by `Send`. The combined unencoded body and attachment size is limited by `mail.MaxMessageSize` (25 MiB).
 
 ## Testing
 

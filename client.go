@@ -2,8 +2,21 @@ package mail
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
+	"net"
 	"net/smtp"
+	"strconv"
+	"time"
+)
+
+const defaultTimeout = 30 * time.Second
+
+var (
+	// ErrInsecureConnection is returned when an unencrypted SMTP connection is requested.
+	ErrInsecureConnection = errors.New("unencrypted SMTP connections are disabled")
+	// ErrInvalidEncryption is returned for an unknown encryption mode.
+	ErrInvalidEncryption = errors.New("invalid SMTP encryption type")
 )
 
 // Client represents an SMTP client.
@@ -13,129 +26,190 @@ type Client struct {
 	username   string
 	password   string
 	encryption EncryptionType
+	timeout    time.Duration
+}
+
+// ClientOption configures a Client.
+type ClientOption func(*Client)
+
+// WithTimeout sets the timeout applied to connecting, TLS handshakes, and SMTP operations.
+func WithTimeout(timeout time.Duration) ClientOption {
+	return func(c *Client) {
+		c.timeout = timeout
+	}
 }
 
 // NewClient creates a new SMTP client.
-func NewClient(host string, port int, username, password string, encryption EncryptionType) *Client {
-	return &Client{
+func NewClient(host string, port int, username, password string, encryption EncryptionType, opts ...ClientOption) *Client {
+	c := &Client{
 		host:       host,
 		port:       port,
 		username:   username,
 		password:   password,
 		encryption: encryption,
+		timeout:    defaultTimeout,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(c)
+		}
+	}
+	return c
 }
 
 // Send sends one or more messages using the SMTP client.
 // It handles potential connection and authentication details.
 func (c *Client) Send(messages ...*Message) error {
-	addr := fmt.Sprintf("%s:%d", c.host, c.port)
-
-	// Prevent sending credentials over unencrypted connections
-	var auth smtp.Auth = nil
-	if c.username != "" || c.password != "" {
-		if c.encryption == EncryptionNone {
-			return fmt.Errorf("refusing to send credentials over an unencrypted connection")
+	if c == nil {
+		return errors.New("mail client must not be nil")
+	}
+	if c.host == "" {
+		return errors.New("SMTP host is required")
+	}
+	if c.port < 1 || c.port > 65535 {
+		return fmt.Errorf("invalid SMTP port %d", c.port)
+	}
+	if c.timeout <= 0 {
+		return errors.New("SMTP timeout must be positive")
+	}
+	if len(messages) == 0 {
+		return errors.New("at least one message is required")
+	}
+	for i, msg := range messages {
+		if msg == nil {
+			return fmt.Errorf("message %d must not be nil", i)
 		}
+		if err := msg.Validate(); err != nil {
+			return fmt.Errorf("message %d is invalid: %w", i, err)
+		}
+	}
+
+	switch c.encryption {
+	case EncryptionSSL, EncryptionTLS:
+	case EncryptionNone:
+		return ErrInsecureConnection
+	default:
+		return fmt.Errorf("%w: %q", ErrInvalidEncryption, c.encryption)
+	}
+
+	addr := net.JoinHostPort(c.host, strconv.Itoa(c.port))
+
+	var auth smtp.Auth
+	if c.username != "" || c.password != "" {
 		auth = smtp.PlainAuth("", c.username, c.password, c.host)
 	}
-	// Custom dialer to handle SSL/TLS vs StartTLS vs None
-	// For simplicity, we can try to use standard helpers or build our own flow if needed.
-	// Standard smtp.SendMail uses StartTLS if available.
-	// For implicit SSL (port 465), we need to dial TLS directly.
 
 	if c.encryption == EncryptionSSL {
 		return c.sendSSL(addr, auth, messages...)
 	}
-
-	// For TLS (StartTLS) and None, we can often rely on standard behaviors,
-	// but explicit control is better.
-	// If EncryptionTLS is set, we strictly mandate StartTLS.
-
 	return c.sendStandard(addr, auth, messages...)
 }
 
 func (c *Client) sendStandard(addr string, auth smtp.Auth, messages ...*Message) error {
-	// This is a simplified implementation.
-	// real implementation might want to persistent connection (Dial then Loop)
-	// but for now, one-shot send is fine.
-
-	// smtp.SendMail does: Dial -> StartTLS (if supported) -> Auth -> Mail -> Rcpt -> Data -> Quit.
-	// We can iterate over messages.
-
 	for _, msg := range messages {
-		to := append(msg.To, msg.Cc...)
-		to = append(to, msg.Bcc...)
-
-		msgBytes, err := msg.Bytes()
+		conn, err := (&net.Dialer{Timeout: c.timeout}).Dial("tcp", addr)
 		if err != nil {
-			return err
+			return fmt.Errorf("connect to SMTP server: %w", err)
+		}
+		if err = conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
+			conn.Close()
+			return fmt.Errorf("set SMTP deadline: %w", err)
+		}
+		client, err := smtp.NewClient(conn, c.host)
+		if err != nil {
+			conn.Close()
+			return fmt.Errorf("initialize SMTP client: %w", err)
 		}
 
-		err = smtp.SendMail(addr, auth, msg.From, to, msgBytes)
-		if err != nil {
+		if ok, _ := client.Extension("STARTTLS"); !ok {
+			client.Close()
+			return errors.New("SMTP server does not support STARTTLS")
+		}
+		if err = client.StartTLS(c.tlsConfig()); err != nil {
+			client.Close()
+			return fmt.Errorf("start TLS: %w", err)
+		}
+
+		if err = c.sendMessage(client, auth, msg); err != nil {
+			client.Close()
 			return err
+		}
+		if err = client.Quit(); err != nil {
+			return fmt.Errorf("quit SMTP session: %w", err)
 		}
 	}
 	return nil
 }
 
 func (c *Client) sendSSL(addr string, auth smtp.Auth, messages ...*Message) error {
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: false, // Strict by default
-		ServerName:         c.host,
-	}
-
-	conn, err := tls.Dial("tcp", addr, tlsConfig)
+	dialer := &net.Dialer{Timeout: c.timeout}
+	conn, err := tls.DialWithDialer(dialer, "tcp", addr, c.tlsConfig())
 	if err != nil {
-		return err
+		return fmt.Errorf("connect to SMTP server over TLS: %w", err)
 	}
 	defer conn.Close()
+	if err = conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
+		return fmt.Errorf("set SMTP deadline: %w", err)
+	}
 
 	client, err := smtp.NewClient(conn, c.host)
 	if err != nil {
-		return err
+		return fmt.Errorf("initialize SMTP client: %w", err)
 	}
-	defer client.Quit() // defer Quit, but we might want to ensure error checking on quit?
-	// standard defer is usually fine for simple clients
-
-	if err = client.Auth(auth); err != nil {
-		return err
+	defer client.Close()
+	if auth != nil {
+		if err = client.Auth(auth); err != nil {
+			return fmt.Errorf("authenticate with SMTP server: %w", err)
+		}
 	}
 
 	for _, msg := range messages {
-		to := append(msg.To, msg.Cc...)
-		to = append(to, msg.Bcc...)
-
-		if err = client.Mail(msg.From); err != nil {
+		if err = c.sendMessage(client, nil, msg); err != nil {
 			return err
 		}
-		for _, addr := range to {
-			if err = client.Rcpt(addr); err != nil {
-				return err
-			}
-		}
+	}
+	if err = client.Quit(); err != nil {
+		return fmt.Errorf("quit SMTP session: %w", err)
+	}
+	return nil
+}
 
-		w, err := client.Data()
-		if err != nil {
-			return err
-		}
+func (c *Client) tlsConfig() *tls.Config {
+	return &tls.Config{MinVersion: tls.VersionTLS12, ServerName: c.host}
+}
 
-		msgBytes, err := msg.Bytes()
-		if err != nil {
-			w.Close() // try to close data writer
-			return err
+func (c *Client) sendMessage(client *smtp.Client, auth smtp.Auth, msg *Message) error {
+	from, recipients, err := msg.envelope()
+	if err != nil {
+		return err
+	}
+	msgBytes, err := msg.Bytes()
+	if err != nil {
+		return err
+	}
+	if auth != nil {
+		if err = client.Auth(auth); err != nil {
+			return fmt.Errorf("authenticate with SMTP server: %w", err)
 		}
-
-		_, err = w.Write(msgBytes)
-		if err != nil {
-			w.Close()
-			return err
+	}
+	if err = client.Mail(from); err != nil {
+		return fmt.Errorf("set SMTP sender: %w", err)
+	}
+	for _, recipient := range recipients {
+		if err = client.Rcpt(recipient); err != nil {
+			return fmt.Errorf("set SMTP recipient: %w", err)
 		}
-
-		if err = w.Close(); err != nil {
-			return err
-		}
+	}
+	w, err := client.Data()
+	if err != nil {
+		return fmt.Errorf("open SMTP data writer: %w", err)
+	}
+	if _, err = w.Write(msgBytes); err != nil {
+		_ = w.Close()
+		return fmt.Errorf("write SMTP message: %w", err)
+	}
+	if err = w.Close(); err != nil {
+		return fmt.Errorf("close SMTP data writer: %w", err)
 	}
 	return nil
 }
