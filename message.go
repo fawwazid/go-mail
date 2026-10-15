@@ -5,10 +5,19 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
+	"net/mail"
 	"net/textproto"
 	"strings"
 )
+
+// MaxMessageSize is the maximum combined unencoded body and attachment size.
+const MaxMessageSize int64 = 25 << 20
+
+var ErrMessageTooLarge = errors.New("message exceeds maximum size")
 
 // Message represents an email message.
 type Message struct {
@@ -88,7 +97,7 @@ func (m *Message) AddAttachmentData(filename string, content []byte, contentType
 	}
 	m.Attachments = append(m.Attachments, &Attachment{
 		Filename:    filename,
-		Content:     content,
+		Content:     append([]byte(nil), content...),
 		ContentType: contentType,
 	})
 	return m
@@ -96,13 +105,77 @@ func (m *Message) AddAttachmentData(filename string, content []byte, contentType
 
 // Validate checks if the message has minimum required fields.
 func (m *Message) Validate() error {
+	if m == nil {
+		return errors.New("message must not be nil")
+	}
 	if m.From == "" {
 		return errors.New("from address is required")
 	}
-	if len(m.To) == 0 {
-		return errors.New("at least one recipient (To) is required")
+	if _, err := mail.ParseAddress(m.From); err != nil {
+		return fmt.Errorf("invalid from address %q: %w", m.From, err)
+	}
+	if len(m.To)+len(m.Cc)+len(m.Bcc) == 0 {
+		return errors.New("at least one recipient is required")
+	}
+	for _, value := range append(append(append([]string(nil), m.To...), m.Cc...), m.Bcc...) {
+		if _, err := mail.ParseAddress(value); err != nil {
+			return fmt.Errorf("invalid recipient address %q: %w", value, err)
+		}
+	}
+	if strings.ContainsAny(m.Subject, "\r\n") {
+		return errors.New("subject must not contain line breaks")
+	}
+	if _, _, err := mime.ParseMediaType(m.ContentType); err != nil {
+		return fmt.Errorf("invalid content type %q: %w", m.ContentType, err)
+	}
+	totalSize := int64(0)
+	addSize := func(size int) error {
+		if int64(size) > MaxMessageSize-totalSize {
+			return fmt.Errorf("%w: maximum is %d bytes", ErrMessageTooLarge, MaxMessageSize)
+		}
+		totalSize += int64(size)
+		return nil
+	}
+	if err := addSize(len(m.From) + len(m.Subject) + len(m.Body) + len(m.ContentType)); err != nil {
+		return err
+	}
+	for _, value := range append(append(append([]string(nil), m.To...), m.Cc...), m.Bcc...) {
+		if err := addSize(len(value)); err != nil {
+			return err
+		}
+	}
+	for _, attachment := range m.Attachments {
+		if attachment == nil {
+			return errors.New("attachment must not be nil")
+		}
+		if attachment.Filename == "" {
+			return errors.New("attachment filename is required")
+		}
+		if _, _, err := mime.ParseMediaType(attachment.ContentType); err != nil {
+			return fmt.Errorf("invalid attachment content type %q: %w", attachment.ContentType, err)
+		}
+		if err := addSize(len(attachment.Filename) + len(attachment.ContentType)); err != nil {
+			return err
+		}
+		if err := addSize(len(attachment.Content)); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func (m *Message) envelope() (string, []string, error) {
+	if err := m.Validate(); err != nil {
+		return "", nil, err
+	}
+	from, _ := mail.ParseAddress(m.From)
+	values := append(append(append([]string(nil), m.To...), m.Cc...), m.Bcc...)
+	recipients := make([]string, 0, len(values))
+	for _, value := range values {
+		address, _ := mail.ParseAddress(value)
+		recipients = append(recipients, address.Address)
+	}
+	return from.Address, recipients, nil
 }
 
 // Bytes returns the byte representation of the message.
@@ -114,40 +187,45 @@ func (m *Message) Bytes() ([]byte, error) {
 	buf := bytes.NewBuffer(nil)
 
 	// Headers
-	buf.WriteString("From: " + m.From + "\r\n")
+	buf.WriteString("From: " + formatAddress(m.From) + "\r\n")
 	if len(m.To) > 0 {
-		buf.WriteString("To: " + strings.Join(m.To, ", ") + "\r\n")
+		buf.WriteString("To: " + formatAddresses(m.To) + "\r\n")
 	}
 	if len(m.Cc) > 0 {
-		buf.WriteString("Cc: " + strings.Join(m.Cc, ", ") + "\r\n")
+		buf.WriteString("Cc: " + formatAddresses(m.Cc) + "\r\n")
 	}
-	buf.WriteString("Subject: " + m.Subject + "\r\n")
+	buf.WriteString("Subject: " + mime.QEncoding.Encode("UTF-8", m.Subject) + "\r\n")
 	buf.WriteString("MIME-Version: 1.0\r\n")
 
-	writer := multipart.NewWriter(buf)
-	boundary := writer.Boundary()
-
 	if len(m.Attachments) > 0 {
-		buf.WriteString("Content-Type: multipart/mixed; boundary=" + boundary + "\r\n")
+		writer := multipart.NewWriter(buf)
+		buf.WriteString("Content-Type: " + mime.FormatMediaType("multipart/mixed", map[string]string{"boundary": writer.Boundary()}) + "\r\n")
 		buf.WriteString("\r\n")
 
 		// Body part
 		bodyPartHeader := make(textproto.MIMEHeader)
 		bodyPartHeader.Set("Content-Type", m.ContentType)
+		bodyPartHeader.Set("Content-Transfer-Encoding", "quoted-printable")
 		bodyPart, err := writer.CreatePart(bodyPartHeader)
 		if err != nil {
 			return nil, err
 		}
-		bodyPart.Write([]byte(m.Body))
+		bodyEncoder := quotedprintable.NewWriter(bodyPart)
+		if _, err = bodyEncoder.Write([]byte(m.Body)); err != nil {
+			return nil, err
+		}
+		if err = bodyEncoder.Close(); err != nil {
+			return nil, err
+		}
 
 		// Attachments
 		for _, att := range m.Attachments {
 			attHeader := make(textproto.MIMEHeader)
+			disposition := "attachment"
 			if att.Inline {
-				attHeader.Set("Content-Disposition", fmt.Sprintf("inline; filename=\"%s\"", att.Filename))
-			} else {
-				attHeader.Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", att.Filename))
+				disposition = "inline"
 			}
+			attHeader.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": att.Filename}))
 			attHeader.Set("Content-Type", att.ContentType)
 			attHeader.Set("Content-Transfer-Encoding", "base64")
 
@@ -156,20 +234,80 @@ func (m *Message) Bytes() ([]byte, error) {
 				return nil, err
 			}
 
-			encoder := base64.NewEncoder(base64.StdEncoding, attPart)
+			encoder := base64.NewEncoder(base64.StdEncoding, &mimeLineWriter{w: attPart})
 			_, err = encoder.Write(att.Content)
 			if err != nil {
 				return nil, err
 			}
-			encoder.Close()
+			if err = encoder.Close(); err != nil {
+				return nil, err
+			}
 		}
-		writer.Close()
+		if err = writer.Close(); err != nil {
+			return nil, err
+		}
 	} else {
-		// Simple message without attachments
 		buf.WriteString("Content-Type: " + m.ContentType + "\r\n")
+		buf.WriteString("Content-Transfer-Encoding: quoted-printable\r\n")
 		buf.WriteString("\r\n")
-		buf.WriteString(m.Body)
+		bodyEncoder := quotedprintable.NewWriter(buf)
+		if _, err := bodyEncoder.Write([]byte(m.Body)); err != nil {
+			return nil, err
+		}
+		if err := bodyEncoder.Close(); err != nil {
+			return nil, err
+		}
 	}
 
 	return buf.Bytes(), nil
+}
+
+func formatAddress(value string) string {
+	address, _ := mail.ParseAddress(value)
+	if address.Name == "" {
+		return address.Address
+	}
+	return address.String()
+}
+
+func formatAddresses(values []string) string {
+	formatted := make([]string, len(values))
+	for i, value := range values {
+		formatted[i] = formatAddress(value)
+	}
+	return strings.Join(formatted, ", ")
+}
+
+type mimeLineWriter struct {
+	w      io.Writer
+	column int
+}
+
+func (w *mimeLineWriter) Write(p []byte) (int, error) {
+	written := 0
+	for len(p) > 0 {
+		remaining := 76 - w.column
+		if remaining == 0 {
+			if _, err := io.WriteString(w.w, "\r\n"); err != nil {
+				return written, err
+			}
+			w.column = 0
+			remaining = 76
+		}
+		n := len(p)
+		if n > remaining {
+			n = remaining
+		}
+		count, err := w.w.Write(p[:n])
+		written += count
+		w.column += count
+		p = p[count:]
+		if err != nil {
+			return written, err
+		}
+		if count != n {
+			return written, io.ErrShortWrite
+		}
+	}
+	return written, nil
 }

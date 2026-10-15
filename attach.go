@@ -2,7 +2,10 @@ package mail
 
 import (
 	"encoding/base64"
+	"fmt"
 	"io"
+	"mime"
+	"net/http"
 	"os"
 	"path/filepath"
 )
@@ -32,13 +35,27 @@ func WithInline(inline bool) FileOption {
 	}
 }
 
+// WithContentType overrides the detected MIME type of the attachment.
+func WithContentType(contentType string) FileOption {
+	return func(a *Attachment) {
+		a.ContentType = contentType
+	}
+}
+
 func readFile(path string) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return io.ReadAll(f)
+	content, err := io.ReadAll(io.LimitReader(f, MaxMessageSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > MaxMessageSize {
+		return nil, fmt.Errorf("%w: attachment exceeds %d bytes", ErrMessageTooLarge, MaxMessageSize)
+	}
+	return content, nil
 }
 
 // CreateAttachmentFromFile creates an Attachment from a file path.
@@ -50,18 +67,21 @@ func CreateAttachmentFromFile(path string, opts ...FileOption) (*Attachment, err
 	}
 
 	filename := filepath.Base(path)
-	// Simple content type detection based on extension could be added here or user provided
-	// For now defaulting to application/octet-stream if unknown, but better handling usually needed.
-	// We'll let the user/internals handle detailed MIME types later or keep it simple.
+	contentType := mime.TypeByExtension(filepath.Ext(filename))
+	if contentType == "" {
+		contentType = http.DetectContentType(content)
+	}
 
 	a := &Attachment{
 		Filename:    filename,
 		Content:     content,
-		ContentType: "application/octet-stream", // Default, arguably should be detected
+		ContentType: contentType,
 	}
 
 	for _, opt := range opts {
-		opt(a)
+		if opt != nil {
+			opt(a)
+		}
 	}
 
 	return a, nil

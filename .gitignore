@@ -23,6 +23,7 @@ profile.cov
 # Go workspace file
 go.work
 go.work.sum
+.gocache/
 
 # env file
 .env
@@ -30,3 +31,8 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Agent skills
+.agents/skills/
+.claude/skills/
+skills-lock.json
