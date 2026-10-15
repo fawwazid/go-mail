@@ -1,7 +1,6 @@
 # go-mail
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/fawwazid/go-mail.svg)](https://pkg.go.dev/github.com/fawwazid/go-mail)
-[![Go Report Card](https://goreportcard.com/badge/github.com/fawwazid/go-mail)](https://goreportcard.com/report/github.com/fawwazid/go-mail)
 
 `go-mail`: Go library for sending emails, supporting SMTP, attachments, and convenient message building.
 
