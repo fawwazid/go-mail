@@ -1,0 +1,43 @@
+name: Security checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go mod verify
+      - run: go vet ./...
+      - run: go test -count=1 ./...
+      - if: runner.os == 'Linux'
+        run: go test -race ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      - name: FIPS approved-mode policy
+        env:
+          GOFIPS140: v1.0.0
+          GODEBUG: fips140=on
+        run: go test -count=1 -run FIPS ./...
+      - name: FIPS strict assessment
+        env:
+          GOFIPS140: v1.0.0
+          GODEBUG: fips140=only
+        run: go test -count=1 -run FIPS ./...
+

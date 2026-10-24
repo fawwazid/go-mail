@@ -35,7 +35,7 @@ type Message struct {
 // Default Content-Type is text/plain.
 func NewMessage() *Message {
 	return &Message{
-		ContentType: "text/plain", // Default to plain text
+		ContentType: "text/plain",
 		To:          make([]string, 0),
 		Cc:          make([]string, 0),
 		Bcc:         make([]string, 0),
@@ -125,6 +125,9 @@ func (m *Message) Validate() error {
 	if strings.ContainsAny(m.Subject, "\r\n") {
 		return errors.New("subject must not contain line breaks")
 	}
+	if strings.ContainsAny(m.ContentType, "\r\n") {
+		return errors.New("content type must not contain line breaks")
+	}
 	if _, _, err := mime.ParseMediaType(m.ContentType); err != nil {
 		return fmt.Errorf("invalid content type %q: %w", m.ContentType, err)
 	}
@@ -150,6 +153,9 @@ func (m *Message) Validate() error {
 		}
 		if attachment.Filename == "" {
 			return errors.New("attachment filename is required")
+		}
+		if strings.ContainsAny(attachment.ContentType, "\r\n") {
+			return errors.New("attachment content type must not contain line breaks")
 		}
 		if _, _, err := mime.ParseMediaType(attachment.ContentType); err != nil {
 			return fmt.Errorf("invalid attachment content type %q: %w", attachment.ContentType, err)
@@ -186,7 +192,6 @@ func (m *Message) Bytes() ([]byte, error) {
 
 	buf := bytes.NewBuffer(nil)
 
-	// Headers
 	buf.WriteString("From: " + formatAddress(m.From) + "\r\n")
 	if len(m.To) > 0 {
 		buf.WriteString("To: " + formatAddresses(m.To) + "\r\n")
@@ -202,7 +207,6 @@ func (m *Message) Bytes() ([]byte, error) {
 		buf.WriteString("Content-Type: " + mime.FormatMediaType("multipart/mixed", map[string]string{"boundary": writer.Boundary()}) + "\r\n")
 		buf.WriteString("\r\n")
 
-		// Body part
 		bodyPartHeader := make(textproto.MIMEHeader)
 		bodyPartHeader.Set("Content-Type", m.ContentType)
 		bodyPartHeader.Set("Content-Transfer-Encoding", "quoted-printable")
@@ -218,7 +222,6 @@ func (m *Message) Bytes() ([]byte, error) {
 			return nil, err
 		}
 
-		// Attachments
 		for _, att := range m.Attachments {
 			attHeader := make(textproto.MIMEHeader)
 			disposition := "attachment"
