@@ -1,0 +1,60 @@
+name: Draft release
+
+on:
+  push:
+    branches:
+      - 'release/v2.*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Draft version, for example v2.0.0
+        required: true
+        default: v2.0.0
+
+permissions:
+  contents: write
+
+concurrency:
+  group: draft-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RELEASE_VERSION: ${{ inputs.tag_name || github.ref_name }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const tag = process.env.RELEASE_VERSION.replace(/^release\//, '');
+            if (!/^v2\.\d+\.\d+$/.test(tag)) {
+              throw new Error('Expected a v2 semantic version');
+            }
+            const repository = context.repo;
+            const body = fs.readFileSync('CHANGELOG.md', 'utf8');
+            const releases = await github.paginate(github.rest.repos.listReleases, repository);
+            const existing = releases.find(release => release.tag_name === tag);
+            if (existing && !existing.draft) {
+              core.notice('This version is already published; leaving it unchanged');
+              return;
+            }
+            const payload = {
+              ...repository,
+              tag_name: tag,
+              target_commitish: context.sha,
+              name: tag,
+              body,
+              draft: true,
+              prerelease: false
+            };
+            const result = existing
+              ? await github.rest.repos.updateRelease({ ...payload, release_id: existing.id })
+              : await github.rest.repos.createRelease(payload);
+            core.notice('Draft release: ' + result.data.html_url);
+            await core.summary.addHeading('Draft release').addLink(tag, result.data.html_url).write();

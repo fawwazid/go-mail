@@ -4,11 +4,8 @@ package mail
 type EncryptionType string
 
 const (
-	// EncryptionNone is retained for source compatibility but Send rejects it.
-	// Deprecated: unencrypted SMTP connections expose message contents in transit.
-	EncryptionNone EncryptionType = "NONE"
-	// EncryptionSSL uses implicit SSL/TLS (usually port 465).
-	EncryptionSSL EncryptionType = "SSL"
-	// EncryptionTLS uses explicit TLS (STARTTLS, usually port 587).
-	EncryptionTLS EncryptionType = "TLS"
+	// EncryptionImplicitTLS establishes TLS before SMTP (usually port 465).
+	EncryptionImplicitTLS EncryptionType = "IMPLICIT_TLS"
+	// EncryptionSTARTTLS uses explicit TLS (STARTTLS, usually port 587).
+	EncryptionSTARTTLS EncryptionType = "STARTTLS"
 )

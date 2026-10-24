@@ -14,9 +14,9 @@ func validTestMessage() *Message {
 }
 
 func TestClient_RejectsInsecureConnection(t *testing.T) {
-	client := NewClient("smtp.example.com", 25, "", "", EncryptionNone)
-	if err := client.Send(validTestMessage()); !errors.Is(err, ErrInsecureConnection) {
-		t.Fatalf("Send() error = %v, want ErrInsecureConnection", err)
+	client := NewClient("smtp.example.com", 25, "", "", EncryptionType("NONE"))
+	if err := client.Send(validTestMessage()); !errors.Is(err, ErrInvalidEncryption) {
+		t.Fatalf("Send() error = %v, want ErrInvalidEncryption", err)
 	}
 }
 
@@ -27,6 +27,15 @@ func TestClient_RejectsUnknownEncryption(t *testing.T) {
 	}
 }
 
+func TestClient_RejectsRemovedEncryptionNames(t *testing.T) {
+	for _, mode := range []EncryptionType{"SSL", "TLS", "NONE"} {
+		client := NewClient("smtp.example.com", 465, "", "", mode)
+		if err := client.Send(validTestMessage()); !errors.Is(err, ErrInvalidEncryption) {
+			t.Fatalf("mode %q: %v", mode, err)
+		}
+	}
+}
+
 func TestClient_ValidatesArgumentsBeforeDialing(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -34,12 +43,12 @@ func TestClient_ValidatesArgumentsBeforeDialing(t *testing.T) {
 		msgs   []*Message
 	}{
 		{name: "nil client", client: nil, msgs: []*Message{validTestMessage()}},
-		{name: "missing host", client: NewClient("", 465, "", "", EncryptionSSL), msgs: []*Message{validTestMessage()}},
-		{name: "invalid port", client: NewClient("smtp.example.com", 0, "", "", EncryptionSSL), msgs: []*Message{validTestMessage()}},
-		{name: "invalid timeout", client: NewClient("smtp.example.com", 465, "", "", EncryptionSSL, WithTimeout(0)), msgs: []*Message{validTestMessage()}},
-		{name: "missing message", client: NewClient("smtp.example.com", 465, "", "", EncryptionSSL)},
-		{name: "nil message", client: NewClient("smtp.example.com", 465, "", "", EncryptionSSL), msgs: []*Message{nil}},
-		{name: "invalid message", client: NewClient("smtp.invalid", 465, "", "", EncryptionSSL), msgs: []*Message{NewMessage()}},
+		{name: "missing host", client: NewClient("", 465, "", "", EncryptionImplicitTLS), msgs: []*Message{validTestMessage()}},
+		{name: "invalid port", client: NewClient("smtp.example.com", 0, "", "", EncryptionImplicitTLS), msgs: []*Message{validTestMessage()}},
+		{name: "invalid timeout", client: NewClient("smtp.example.com", 465, "", "", EncryptionImplicitTLS, WithTimeout(0)), msgs: []*Message{validTestMessage()}},
+		{name: "missing message", client: NewClient("smtp.example.com", 465, "", "", EncryptionImplicitTLS)},
+		{name: "nil message", client: NewClient("smtp.example.com", 465, "", "", EncryptionImplicitTLS), msgs: []*Message{nil}},
+		{name: "invalid message", client: NewClient("smtp.invalid", 465, "", "", EncryptionImplicitTLS), msgs: []*Message{NewMessage()}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -51,7 +60,7 @@ func TestClient_ValidatesArgumentsBeforeDialing(t *testing.T) {
 }
 
 func TestClient_WithTimeout(t *testing.T) {
-	client := NewClient("smtp.example.com", 465, "", "", EncryptionSSL, WithTimeout(5*time.Second))
+	client := NewClient("smtp.example.com", 465, "", "", EncryptionImplicitTLS, WithTimeout(5*time.Second))
 	if client.timeout != 5*time.Second {
 		t.Fatalf("timeout = %s", client.timeout)
 	}

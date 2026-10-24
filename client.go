@@ -12,12 +12,8 @@ import (
 
 const defaultTimeout = 30 * time.Second
 
-var (
-	// ErrInsecureConnection is returned when an unencrypted SMTP connection is requested.
-	ErrInsecureConnection = errors.New("unencrypted SMTP connections are disabled")
-	// ErrInvalidEncryption is returned for an unknown encryption mode.
-	ErrInvalidEncryption = errors.New("invalid SMTP encryption type")
-)
+// ErrInvalidEncryption is returned for an unknown encryption mode.
+var ErrInvalidEncryption = errors.New("invalid SMTP encryption type")
 
 // Client represents an SMTP client.
 type Client struct {
@@ -58,7 +54,6 @@ func NewClient(host string, port int, username, password string, encryption Encr
 }
 
 // Send sends one or more messages using the SMTP client.
-// It handles potential connection and authentication details.
 func (c *Client) Send(messages ...*Message) error {
 	if c == nil {
 		return errors.New("mail client must not be nil")
@@ -85,9 +80,7 @@ func (c *Client) Send(messages ...*Message) error {
 	}
 
 	switch c.encryption {
-	case EncryptionSSL, EncryptionTLS:
-	case EncryptionNone:
-		return ErrInsecureConnection
+	case EncryptionImplicitTLS, EncryptionSTARTTLS:
 	default:
 		return fmt.Errorf("%w: %q", ErrInvalidEncryption, c.encryption)
 	}
@@ -99,13 +92,13 @@ func (c *Client) Send(messages ...*Message) error {
 		auth = smtp.PlainAuth("", c.username, c.password, c.host)
 	}
 
-	if c.encryption == EncryptionSSL {
-		return c.sendSSL(addr, auth, messages...)
+	if c.encryption == EncryptionImplicitTLS {
+		return c.sendImplicitTLS(addr, auth, messages...)
 	}
-	return c.sendStandard(addr, auth, messages...)
+	return c.sendSTARTTLS(addr, auth, messages...)
 }
 
-func (c *Client) sendStandard(addr string, auth smtp.Auth, messages ...*Message) error {
+func (c *Client) sendSTARTTLS(addr string, auth smtp.Auth, messages ...*Message) error {
 	for _, msg := range messages {
 		conn, err := (&net.Dialer{Timeout: c.timeout}).Dial("tcp", addr)
 		if err != nil {
@@ -141,7 +134,7 @@ func (c *Client) sendStandard(addr string, auth smtp.Auth, messages ...*Message)
 	return nil
 }
 
-func (c *Client) sendSSL(addr string, auth smtp.Auth, messages ...*Message) error {
+func (c *Client) sendImplicitTLS(addr string, auth smtp.Auth, messages ...*Message) error {
 	dialer := &net.Dialer{Timeout: c.timeout}
 	conn, err := tls.DialWithDialer(dialer, "tcp", addr, c.tlsConfig())
 	if err != nil {
@@ -175,7 +168,18 @@ func (c *Client) sendSSL(addr string, auth smtp.Auth, messages ...*Message) erro
 }
 
 func (c *Client) tlsConfig() *tls.Config {
-	return &tls.Config{MinVersion: tls.VersionTLS12, ServerName: c.host}
+	return &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ServerName: c.host,
+		// SP 800-52 Rev. 2: ECDHE with authenticated AES-GCM for TLS 1.2.
+		// Go controls TLS 1.3 suites and further restricts negotiation in FIPS mode.
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		},
+	}
 }
 
 func (c *Client) sendMessage(client *smtp.Client, auth smtp.Auth, msg *Message) error {
