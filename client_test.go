@@ -65,3 +65,41 @@ func TestClient_WithTimeout(t *testing.T) {
 		t.Fatalf("timeout = %s", client.timeout)
 	}
 }
+
+func TestMockClientCompatibilityAndMethods(t *testing.T) {
+	wantErr := errors.New("mock send failure")
+	client := &MockClient{Err: wantErr}
+	message := validTestMessage()
+	if err := client.Send(message); !errors.Is(err, wantErr) {
+		t.Fatalf("Send() error = %v, want %v", err, wantErr)
+	}
+	if len(client.SentMessages) != 0 {
+		t.Fatal("Send() recorded a message when configured to fail")
+	}
+
+	client.SetError(nil)
+	if err := client.Send(message); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.SentMessages) != 1 || client.SentMessages[0] != message {
+		t.Fatal("legacy SentMessages field did not record the message")
+	}
+
+	snapshot := client.Messages()
+	if len(snapshot) != 1 || snapshot[0] != message {
+		t.Fatal("Messages() returned an incorrect snapshot")
+	}
+	snapshot[0] = nil
+	if client.Messages()[0] != message {
+		t.Fatal("mutating the returned slice changed the recorded message list")
+	}
+}
+
+func TestMockClientSetError(t *testing.T) {
+	client := NewMockClient()
+	wantErr := errors.New("mock send failure")
+	client.SetError(wantErr)
+	if err := client.Send(validTestMessage()); !errors.Is(err, wantErr) {
+		t.Fatalf("Send() error = %v, want %v", err, wantErr)
+	}
+}
