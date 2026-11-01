@@ -23,3 +23,7 @@ Require explicit verified SMTP TLS and reject malformed MIME headers.
 ```sh
 go get github.com/fawwazid/go-mail/v2@v2.0.0
 ```
+
+## v1.0.0 — 2026-10-15
+
+- Initial release of the SMTP mail package with attachment support and security hardening.
