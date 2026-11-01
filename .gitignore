@@ -33,6 +33,6 @@ go.work.sum
 # .vscode/
 
 # Agent skills
-.agents/skills/
-.claude/skills/
+.agents/
+.claude/
 skills-lock.json
