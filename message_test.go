@@ -7,6 +7,8 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/mail"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -169,6 +171,96 @@ func TestMessage_AddAttachmentDataCopiesContent(t *testing.T) {
 	content[0] = 'X'
 	if string(m.Attachments[0].Content) != "original" {
 		t.Fatal("attachment content changed after caller mutated its buffer")
+	}
+}
+
+func TestMessage_AddAttachmentDataCheckedRejectsBeforeCopy(t *testing.T) {
+	content := make([]byte, int(MaxMessageSize)+1)
+	m := NewMessage()
+	if err := m.AddAttachmentDataChecked("large.bin", content, "application/octet-stream"); !errors.Is(err, ErrMessageTooLarge) {
+		t.Fatalf("AddAttachmentDataChecked() error = %v, want ErrMessageTooLarge", err)
+	}
+	if len(m.Attachments) != 0 {
+		t.Fatalf("rejected attachment was retained: %d attachments", len(m.Attachments))
+	}
+}
+
+func TestMessage_AddAttachmentDataLegacyFailsClosed(t *testing.T) {
+	content := make([]byte, int(MaxMessageSize)+1)
+	m := NewMessage().AddAttachmentData("large.bin", content, "application/octet-stream")
+	if len(m.Attachments) != 1 || len(m.Attachments[0].Content) != 0 {
+		t.Fatal("legacy method retained or copied rejected attachment data")
+	}
+	if err := m.Validate(); !errors.Is(err, ErrAttachmentDataRejected) {
+		t.Fatalf("Validate() error = %v, want ErrAttachmentDataRejected", err)
+	}
+}
+
+func TestMessage_AddAttachmentDataCheckedRejectsAggregateOverflow(t *testing.T) {
+	m := NewMessage().SetBody("text/plain", strings.Repeat("x", int(MaxMessageSize)))
+	if err := m.AddAttachmentDataChecked("a.bin", []byte{1}, "application/octet-stream"); !errors.Is(err, ErrMessageTooLarge) {
+		t.Fatalf("AddAttachmentDataChecked() error = %v, want ErrMessageTooLarge", err)
+	}
+	if len(m.Attachments) != 0 {
+		t.Fatal("aggregate-overflow attachment was retained")
+	}
+}
+
+func TestMessage_RejectsExcessiveRecipientsBeforeParsing(t *testing.T) {
+	m := NewMessage().SetFrom("sender@example.com")
+	m.To = make([]string, MaxRecipients+1)
+	if err := m.Validate(); !errors.Is(err, ErrTooManyRecipients) {
+		t.Fatalf("Validate() error = %v, want ErrTooManyRecipients", err)
+	}
+
+	m.To = make([]string, MaxRecipients)
+	m.Cc = []string{"recipient@example.com"}
+	if err := m.Validate(); !errors.Is(err, ErrTooManyRecipients) {
+		t.Fatalf("Validate() combined count error = %v, want ErrTooManyRecipients", err)
+	}
+}
+
+func TestMessage_AddRecipientBuildersBoundVariadicInput(t *testing.T) {
+	values := make([]string, MaxRecipients+10_000)
+	m := NewMessage().AddTo(values...)
+	if len(m.To) != MaxRecipients+1 {
+		t.Fatalf("AddTo retained %d recipients, want bounded marker count %d", len(m.To), MaxRecipients+1)
+	}
+	if err := m.Validate(); !errors.Is(err, ErrTooManyRecipients) {
+		t.Fatalf("Validate() error = %v, want ErrTooManyRecipients", err)
+	}
+}
+
+func TestMessage_RejectsExcessiveAttachments(t *testing.T) {
+	m := NewMessage()
+	m.Attachments = make([]*Attachment, MaxAttachments+1)
+	if err := m.AddAttachmentDataChecked("extra.bin", []byte{1}, "application/octet-stream"); !errors.Is(err, ErrTooManyAttachments) {
+		t.Fatalf("AddAttachmentDataChecked() error = %v, want ErrTooManyAttachments", err)
+	}
+	if err := m.Validate(); !errors.Is(err, ErrTooManyAttachments) {
+		t.Fatalf("Validate() error = %v, want ErrTooManyAttachments", err)
+	}
+}
+
+func TestMessage_AddAttachmentRejectsLimits(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "small.txt")
+	if err := os.WriteFile(path, []byte("small"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tooMany := NewMessage()
+	tooMany.Attachments = make([]*Attachment, MaxAttachments)
+	if err := tooMany.AddAttachment(filepath.Join(dir, "missing.txt")); !errors.Is(err, ErrTooManyAttachments) {
+		t.Fatalf("AddAttachment() count error = %v, want ErrTooManyAttachments", err)
+	}
+
+	tooLarge := NewMessage().SetBody("text/plain", strings.Repeat("x", int(MaxMessageSize)))
+	if err := tooLarge.AddAttachment(path); !errors.Is(err, ErrMessageTooLarge) {
+		t.Fatalf("AddAttachment() size error = %v, want ErrMessageTooLarge", err)
+	}
+	if len(tooLarge.Attachments) != 0 {
+		t.Fatal("aggregate-overflow file attachment was retained")
 	}
 }
 

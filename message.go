@@ -14,10 +14,23 @@ import (
 	"strings"
 )
 
-// MaxMessageSize is the maximum combined unencoded body and attachment size.
+// MaxMessageSize is the maximum combined unencoded message size.
 const MaxMessageSize int64 = 25 << 20
 
-var ErrMessageTooLarge = errors.New("message exceeds maximum size")
+const (
+	// MaxRecipients bounds the number of envelope recipients per message.
+	MaxRecipients = 1000
+	// MaxAttachments bounds the number of attachments per message.
+	MaxAttachments             = 100
+	rejectedAttachmentFilename = "\x00go-mail-rejected-attachment"
+)
+
+var (
+	ErrMessageTooLarge        = errors.New("message exceeds maximum size")
+	ErrTooManyRecipients      = errors.New("message exceeds maximum recipient count")
+	ErrTooManyAttachments     = errors.New("message exceeds maximum attachment count")
+	ErrAttachmentDataRejected = errors.New("attachment data was rejected; use AddAttachmentDataChecked for the cause")
+)
 
 // Message represents an email message.
 type Message struct {
@@ -51,20 +64,43 @@ func (m *Message) SetFrom(from string) *Message {
 
 // AddTo adds recipients to the To list.
 func (m *Message) AddTo(emails ...string) *Message {
-	m.To = append(m.To, emails...)
+	m.addRecipients(&m.To, emails)
 	return m
 }
 
 // AddCc adds recipients to the Cc list.
 func (m *Message) AddCc(emails ...string) *Message {
-	m.Cc = append(m.Cc, emails...)
+	m.addRecipients(&m.Cc, emails)
 	return m
 }
 
 // AddBcc adds recipients to the Bcc list.
 func (m *Message) AddBcc(emails ...string) *Message {
-	m.Bcc = append(m.Bcc, emails...)
+	m.addRecipients(&m.Bcc, emails)
 	return m
+}
+
+func (m *Message) addRecipients(target *[]string, values []string) {
+	if m == nil || len(values) == 0 {
+		return
+	}
+	count, overLimit := m.recipientCount()
+	if overLimit {
+		return
+	}
+	remaining := MaxRecipients - count
+	if remaining == 0 {
+		*target = append(*target, "")
+		return
+	}
+	if len(values) > remaining {
+		*target = append(*target, values[:remaining]...)
+		// Keep a bounded invalid marker so Validate fails closed without copying
+		// the rest of an oversized variadic input.
+		*target = append(*target, "")
+		return
+	}
+	*target = append(*target, values...)
 }
 
 // SetSubject sets the email subject.
@@ -82,8 +118,20 @@ func (m *Message) SetBody(contentType, body string) *Message {
 
 // AddAttachment adds an attachment from a file path.
 func (m *Message) AddAttachment(path string, opts ...FileOption) error {
+	if m == nil {
+		return errors.New("message must not be nil")
+	}
+	if len(m.Attachments) >= MaxAttachments {
+		return ErrTooManyAttachments
+	}
+	if _, overLimit := m.recipientCount(); overLimit {
+		return ErrTooManyRecipients
+	}
 	a, err := CreateAttachmentFromFile(path, opts...)
 	if err != nil {
+		return err
+	}
+	if _, err := m.addedAttachmentSize(a.Filename, a.ContentType, len(a.Content)); err != nil {
 		return err
 	}
 	m.Attachments = append(m.Attachments, a)
@@ -92,21 +140,62 @@ func (m *Message) AddAttachment(path string, opts ...FileOption) error {
 
 // AddAttachmentData adds an attachment from bytes.
 func (m *Message) AddAttachmentData(filename string, content []byte, contentType string) *Message {
+	if err := m.AddAttachmentDataChecked(filename, content, contentType); err != nil && m != nil {
+		// Preserve the legacy fluent API while ensuring invalid data fails closed
+		// when the message is validated or sent. The marker contains no caller data.
+		if !m.hasRejectedAttachment() {
+			m.Attachments = append(m.Attachments, &Attachment{Filename: rejectedAttachmentFilename})
+		}
+	}
+	return m
+}
+
+// AddAttachmentDataChecked adds an attachment after checking message limits.
+// It returns an error immediately and does not copy content when a limit is
+// exceeded. Prefer this method when attachment input may be untrusted.
+func (m *Message) AddAttachmentDataChecked(filename string, content []byte, contentType string) error {
+	if m == nil {
+		return errors.New("message must not be nil")
+	}
+	if len(m.Attachments) >= MaxAttachments {
+		return ErrTooManyAttachments
+	}
+	if _, overLimit := m.recipientCount(); overLimit {
+		return ErrTooManyRecipients
+	}
+	if int64(len(content)) > MaxMessageSize {
+		return ErrMessageTooLarge
+	}
 	if contentType == "" {
 		contentType = "application/octet-stream"
+	}
+	if _, err := m.addedAttachmentSize(filename, contentType, len(content)); err != nil {
+		return err
 	}
 	m.Attachments = append(m.Attachments, &Attachment{
 		Filename:    filename,
 		Content:     append([]byte(nil), content...),
 		ContentType: contentType,
 	})
-	return m
+	return nil
 }
 
 // Validate checks if the message has minimum required fields.
 func (m *Message) Validate() error {
 	if m == nil {
 		return errors.New("message must not be nil")
+	}
+	if m.hasRejectedAttachment() {
+		return ErrAttachmentDataRejected
+	}
+	if len(m.Attachments) > MaxAttachments {
+		return ErrTooManyAttachments
+	}
+	if _, overLimit := m.recipientCount(); overLimit {
+		return ErrTooManyRecipients
+	}
+	if _, err := m.messageSize(); err != nil {
+		return err
 	}
 	if m.From == "" {
 		return errors.New("from address is required")
@@ -117,9 +206,11 @@ func (m *Message) Validate() error {
 	if len(m.To)+len(m.Cc)+len(m.Bcc) == 0 {
 		return errors.New("at least one recipient is required")
 	}
-	for _, value := range append(append(append([]string(nil), m.To...), m.Cc...), m.Bcc...) {
-		if _, err := mail.ParseAddress(value); err != nil {
-			return fmt.Errorf("invalid recipient address %q: %w", value, err)
+	for _, recipients := range [][]string{m.To, m.Cc, m.Bcc} {
+		for _, value := range recipients {
+			if _, err := mail.ParseAddress(value); err != nil {
+				return fmt.Errorf("invalid recipient address %q: %w", value, err)
+			}
 		}
 	}
 	if strings.ContainsAny(m.Subject, "\r\n") {
@@ -130,22 +221,6 @@ func (m *Message) Validate() error {
 	}
 	if _, _, err := mime.ParseMediaType(m.ContentType); err != nil {
 		return fmt.Errorf("invalid content type %q: %w", m.ContentType, err)
-	}
-	totalSize := int64(0)
-	addSize := func(size int) error {
-		if int64(size) > MaxMessageSize-totalSize {
-			return fmt.Errorf("%w: maximum is %d bytes", ErrMessageTooLarge, MaxMessageSize)
-		}
-		totalSize += int64(size)
-		return nil
-	}
-	if err := addSize(len(m.From) + len(m.Subject) + len(m.Body) + len(m.ContentType)); err != nil {
-		return err
-	}
-	for _, value := range append(append(append([]string(nil), m.To...), m.Cc...), m.Bcc...) {
-		if err := addSize(len(value)); err != nil {
-			return err
-		}
 	}
 	for _, attachment := range m.Attachments {
 		if attachment == nil {
@@ -160,14 +235,76 @@ func (m *Message) Validate() error {
 		if _, _, err := mime.ParseMediaType(attachment.ContentType); err != nil {
 			return fmt.Errorf("invalid attachment content type %q: %w", attachment.ContentType, err)
 		}
-		if err := addSize(len(attachment.Filename) + len(attachment.ContentType)); err != nil {
-			return err
-		}
-		if err := addSize(len(attachment.Content)); err != nil {
-			return err
-		}
 	}
 	return nil
+}
+
+func (m *Message) messageSize() (int64, error) {
+	total := int64(0)
+	add := func(size int) error {
+		if int64(size) > MaxMessageSize-total {
+			return fmt.Errorf("%w: maximum is %d bytes", ErrMessageTooLarge, MaxMessageSize)
+		}
+		total += int64(size)
+		return nil
+	}
+	for _, size := range []int{len(m.From), len(m.Subject), len(m.Body), len(m.ContentType)} {
+		if err := add(size); err != nil {
+			return 0, err
+		}
+	}
+	for _, recipients := range [][]string{m.To, m.Cc, m.Bcc} {
+		for _, recipient := range recipients {
+			if err := add(len(recipient)); err != nil {
+				return 0, err
+			}
+		}
+	}
+	for _, attachment := range m.Attachments {
+		if attachment == nil {
+			return 0, errors.New("attachment must not be nil")
+		}
+		for _, size := range []int{len(attachment.Filename), len(attachment.ContentType), len(attachment.Content)} {
+			if err := add(size); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return total, nil
+}
+
+func (m *Message) recipientCount() (int, bool) {
+	count := 0
+	for _, recipients := range [][]string{m.To, m.Cc, m.Bcc} {
+		if len(recipients) > MaxRecipients-count {
+			return MaxRecipients + 1, true
+		}
+		count += len(recipients)
+	}
+	return count, false
+}
+
+func (m *Message) addedAttachmentSize(filename, contentType string, contentLength int) (int64, error) {
+	current, err := m.messageSize()
+	if err != nil {
+		return 0, err
+	}
+	for _, size := range []int{len(filename), len(contentType), contentLength} {
+		if int64(size) > MaxMessageSize-current {
+			return 0, fmt.Errorf("%w: maximum is %d bytes", ErrMessageTooLarge, MaxMessageSize)
+		}
+		current += int64(size)
+	}
+	return current, nil
+}
+
+func (m *Message) hasRejectedAttachment() bool {
+	for _, attachment := range m.Attachments {
+		if attachment != nil && attachment.Filename == rejectedAttachmentFilename {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Message) envelope() (string, []string, error) {

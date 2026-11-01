@@ -37,12 +37,17 @@ Load real credentials from your application's secret configuration.
 - `WithTimeout`: bound connection, handshake, and SMTP operations.
 - `Message`: sender, To/Cc/Bcc, subject, text/HTML body, and attachments.
 - `AddAttachment` reads a bounded file; `AddAttachmentData` copies supplied data.
+  Use `AddAttachmentDataChecked` for untrusted bytes to receive limit errors before copying.
 - `Validate` and `Bytes` report malformed addresses, headers, and MIME types.
-- `MockClient` supports application tests without sending email.
+- `MockClient` supports application tests without sending email. Prefer
+  `Messages()` and `SetError()`; the exported `SentMessages` and `Err` fields
+  remain available for source compatibility but are deprecated and are not
+  safe for direct concurrent access.
 
 TLS 1.2 uses ECDHE with AES-GCM; Go manages TLS 1.3 and FIPS negotiation.
 Certificate and hostname verification remain enabled. Combined unencoded
-message data is limited to 25 MiB. Bcc recipients are omitted from message headers.
+Messages allow at most 1,000 recipients and 100 attachments, with combined
+unencoded data limited to 25 MiB. Bcc recipients are omitted from message headers.
 
 ## Breaking changes
 
