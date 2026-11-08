@@ -59,3 +59,23 @@ changes. Do not create or edit changelogs; Release Please generates them.
   create the version tag and GitHub release.
 - Never create or edit changelogs manually; Release Please generates them.
 - Keep the temporary `last-release-sha` at the v2 preparation commit during this rollout: the existing v2.0.0 tag is not on `main` history. After the first generated v2.0.1 release PR is merged and tagged, remove this fixed marker in a chore PR so later releases track the latest tag automatically.
+## Branches and pull requests
+
+- Start from the repository's default branch and create a branch for each
+  change. Do not commit directly to the default branch.
+- Use lowercase type prefixes and concise kebab-case descriptions for branch
+  names: `feat/<description>`, `fix/<description>`, `docs/<description>`,
+  `refactor/<description>`, `test/<description>`, `chore/<description>`, or
+  `security/<description>`.
+- Follow Conventional Commits for commit messages:
+  `<type>(<optional-scope>): <imperative summary>`. Keep the summary concise,
+  lowercase, and without a final period. Use `!` before the colon and a
+  `BREAKING CHANGE:` footer for breaking changes.
+- Open a pull request for each branch. Use a Conventional Commit title so
+  squash merges and release automation produce the intended version change.
+  Follow the release types and exceptions described above in this file.
+- Describe what changed and why, note user or API impact, and report relevant
+  checks and their results. Mention security, compatibility, or migration
+  considerations when applicable, and link related issues when available.
+- Keep pull requests focused and satisfy the repository's required checks and
+  review policy before merging.
