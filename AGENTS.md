@@ -20,6 +20,8 @@ changes. Do not create or edit changelogs; Release Please generates them.
 
 ## Development
 
+- Workspace invariants: go-mail envelopes do not flatten recipient slices; HOTP counters use a fixed buffer; MFA callers atomically consume TOTP steps and rate-limit attempts.
+
 - Workspace mail invariant: `go-mail` caps messages at 1,000 recipients, 100
   attachments, and 25 MiB; untrusted attachment bytes use its checked API.
 - Workspace MFA invariant: `ConstantTimeCompare` rejects strings longer than

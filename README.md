@@ -3,7 +3,7 @@
 Install: `go get github.com/fawwazid/go-mail/v2@v2.0.0`.
 See [v2 release notes](CHANGELOG.md) for breaking changes.
 
-SMTP message building and sending over verified TLS. Requires Go 1.27.3.
+SMTP message building and sending over verified TLS. Requires Go 1.27.4.
 
 ## Usage
 

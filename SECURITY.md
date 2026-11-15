@@ -23,9 +23,9 @@ depends on the validated Go module, its approved operating environment,
 security policy, and application controls. A library cannot enable FIPS mode
 for its caller.
 
-The baseline is Go 1.27.3. The frozen Go module v1.0.0 corresponds to
+The baseline is Go 1.27.4. The frozen Go module v1.0.0 corresponds to
 [CMVP certificate 5247](https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5247),
-checked active on 2026-11-01. Review certificate status and operating-environment
+checked active on 2026-11-14. Review certificate status and operating-environment
 coverage before deployment. A consuming application can build with
 GOFIPS140=v1.0.0 and must not override it with fips140=off.
 The strict only setting below is an assessment aid, not a production setting.

@@ -312,11 +312,12 @@ func (m *Message) envelope() (string, []string, error) {
 		return "", nil, err
 	}
 	from, _ := mail.ParseAddress(m.From)
-	values := append(append(append([]string(nil), m.To...), m.Cc...), m.Bcc...)
-	recipients := make([]string, 0, len(values))
-	for _, value := range values {
-		address, _ := mail.ParseAddress(value)
-		recipients = append(recipients, address.Address)
+	recipients := make([]string, 0, len(m.To)+len(m.Cc)+len(m.Bcc))
+	for _, group := range [3][]string{m.To, m.Cc, m.Bcc} {
+		for _, value := range group {
+			address, _ := mail.ParseAddress(value)
+			recipients = append(recipients, address.Address)
+		}
 	}
 	return from.Address, recipients, nil
 }
