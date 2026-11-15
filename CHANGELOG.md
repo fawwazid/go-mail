@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.3](https://github.com/fawwazid/go-mail/compare/v2.0.2...v2.0.3) (2026-11-15)
+
+
+### Bug Fixes
+
+* **security:** require patched Go toolchain ([#11](https://github.com/fawwazid/go-mail/issues/11)) ([#12](https://github.com/fawwazid/go-mail/issues/12)) ([0328b57](https://github.com/fawwazid/go-mail/commit/0328b574eb6d0426731a0d63197b4a6dd5c675ce))
+
 ## [2.0.2](https://github.com/fawwazid/go-mail/compare/v2.0.1...v2.0.2) (2026-11-08)
 
 
